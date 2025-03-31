@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./MyUSD.sol";
 import "./EthPriceOracle.sol";
+import "./Staking.sol";
 
 error Engine__InvalidAmount();
 error Engine__TransferFailed();
@@ -12,26 +13,85 @@ error Engine__MintingFailed();
 error Engine__BurningFailed();
 error Engine__PositionSafe();
 error Engine__NotLiquidatable();
+error Engine__InvalidInterestRate();
 
 contract MyUSDEngine is Ownable {
-    uint256 private constant COLLATERAL_RATIO = 150; // 150% collateralization required (one and a half times the amount of stablecoin minted)
+    uint256 private constant COLLATERAL_RATIO = 150; // 150% collateralization required
     uint256 private constant LIQUIDATOR_REWARD = 10; // 10% reward for liquidators
+    uint256 private constant SECONDS_PER_YEAR = 365 days; // adjust later
+    uint256 private constant PRECISION = 1e18;
 
     MyUSD private i_myUSD;
     EthPriceOracle private i_ethPriceOracle;
+    Staking private i_staking;
 
-    mapping(address => uint256) public s_userCollateral; // User's collateral balance
-    mapping(address => uint256) public s_userMinted; // User's minted stablecoin balance
+    uint256 public interestRate; // Annual interest rate in basis points (1% = 100)
+    uint256 public lastUpdateTime;
+    uint256 public totalDebt;
+
+    mapping(address => uint256) public s_userCollateral;
+    mapping(address => uint256) public s_userMinted;
+    mapping(address => uint256) public s_userLastUpdateTime;
 
     event CollateralAdded(address indexed user, uint256 indexed amount, uint256 price);
     event CollateralWithdrawn(address indexed from, address indexed to, uint256 indexed amount, uint256 price);
+    event InterestRateUpdated(uint256 newRate);
+    event InterestAccrued(uint256 amount);
 
     constructor(address _ethPriceOracle) Ownable(msg.sender) {
         i_ethPriceOracle = EthPriceOracle(_ethPriceOracle);
+        lastUpdateTime = block.timestamp;
     }
 
     function setMyUSD(address myUSDAddress) external onlyOwner {
         i_myUSD = MyUSD(myUSDAddress);
+    }
+
+    function setStaking(address stakingAddress) external onlyOwner {
+        i_staking = Staking(stakingAddress);
+    }
+
+    function setInterestRate(uint256 newRate) external onlyOwner {
+        if (newRate > 10000) revert Engine__InvalidInterestRate(); // Max 100%
+        _accrueInterest();
+        interestRate = newRate;
+        emit InterestRateUpdated(newRate);
+    }
+
+    function _accrueInterest() internal {
+        if (totalDebt == 0) {
+            lastUpdateTime = block.timestamp;
+            return;
+        }
+
+        uint256 timeElapsed = block.timestamp - lastUpdateTime;
+        if (timeElapsed == 0) return;
+
+        uint256 interest = (totalDebt * interestRate * timeElapsed) / (SECONDS_PER_YEAR * 10000);
+        if (interest > 0) {
+            totalDebt += interest;
+            i_myUSD.mintTo(address(i_staking), interest);
+            i_staking.distributeRewards(interest);
+            emit InterestAccrued(interest);
+        }
+        lastUpdateTime = block.timestamp;
+    }
+
+    function _updateUserDebt(address user) internal {
+        if (s_userMinted[user] == 0) {
+            s_userLastUpdateTime[user] = block.timestamp;
+            return;
+        }
+
+        uint256 timeElapsed = block.timestamp - s_userLastUpdateTime[user];
+        if (timeElapsed == 0) return;
+
+        uint256 userInterest = (s_userMinted[user] * interestRate * timeElapsed) / (SECONDS_PER_YEAR * 10000);
+        if (userInterest > 0) {
+            s_userMinted[user] += userInterest;
+            totalDebt += userInterest;
+        }
+        s_userLastUpdateTime[user] = block.timestamp;
     }
 
     // Allows users to add collateral to their account
@@ -69,9 +129,12 @@ contract MyUSDEngine is Ownable {
         if (mintAmount == 0) {
             revert Engine__InvalidAmount(); // Revert if mint amount is zero
         }
-        s_userMinted[msg.sender] += mintAmount; // Update user's minted stablecoin balance
-        _validatePosition(msg.sender); // Validate user's position before minting
-        bool success = i_myUSD.mintTo(msg.sender, mintAmount); // Mint stablecoins to user
+        _accrueInterest();
+        _updateUserDebt(msg.sender);
+        s_userMinted[msg.sender] += mintAmount;
+        totalDebt += mintAmount;
+        _validatePosition(msg.sender);
+        bool success = i_myUSD.mintTo(msg.sender, mintAmount);
         if (!success) {
             revert Engine__MintingFailed(); // Revert if minting fails
         }
@@ -82,8 +145,11 @@ contract MyUSDEngine is Ownable {
         if (burnAmount == 0 || burnAmount > s_userMinted[msg.sender]) {
             revert Engine__InvalidAmount(); // Revert if burn amount is invalid
         }
-        s_userMinted[msg.sender] -= burnAmount; // Reduce user's minted balance
-        bool success = i_myUSD.burnFrom(msg.sender, burnAmount); // Burn stablecoins from user
+        _accrueInterest();
+        _updateUserDebt(msg.sender);
+        s_userMinted[msg.sender] -= burnAmount;
+        totalDebt -= burnAmount;
+        bool success = i_myUSD.burnFrom(msg.sender, burnAmount);
         if (!success) {
             revert Engine__BurningFailed(); // Revert if burning fails
         }

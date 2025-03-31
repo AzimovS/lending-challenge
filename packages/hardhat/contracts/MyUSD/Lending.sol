@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./MyUSD.sol";
 import "./CoinDEX.sol";
+import "./Staking.sol";
 
 error Lending__InvalidAmount();
 error Lending__TransferFailed();
@@ -14,14 +15,17 @@ error Lending__PositionSafe();
 error Lending__NotLiquidatable();
 
 contract Lending is Ownable {
-    uint256 private constant COLLATERAL_RATIO = 120; // 120% collateralization required
+    uint256 private constant COLLATERAL_RATIO = 150; // 150% collateralization required
     uint256 private constant LIQUIDATOR_REWARD = 10; // 10% reward for liquidators
+    uint256 private constant INTEREST_RATE = 5; // 5% APR
 
     MyUSD private i_myUSD;
     CoinDEX private i_coinDEX;
+    Staking private i_staking;
 
     mapping(address => uint256) public s_userCollateral; // User's collateral balance
     mapping(address => uint256) public s_userBorrowed; // User's borrowed corn balance
+    mapping(address => uint256) public s_lastInterestAccrual; // Track last interest accrual
 
     event CollateralAdded(address indexed user, uint256 indexed amount, uint256 price);
     event CollateralWithdrawn(address indexed user, uint256 indexed amount, uint256 price);
@@ -34,10 +38,12 @@ contract Lending is Ownable {
         uint256 liquidatedUserDebt,
         uint256 price
     );
+    event InterestAccrued(address indexed user, uint256 interest);
 
-    constructor(address _coinDEX, address _myUSD) Ownable(msg.sender) {
+    constructor(address _coinDEX, address _myUSD, address _staking) Ownable(msg.sender) {
         i_coinDEX = CoinDEX(_coinDEX);
         i_myUSD = MyUSD(_myUSD);
+        i_staking = Staking(_staking);
     }
 
     /**
@@ -121,32 +127,46 @@ contract Lending is Ownable {
      * @notice Allows users to borrow corn based on their collateral
      * @param borrowAmount The amount of corn to borrow
      */
-    function borrowCorn(uint256 borrowAmount) public {
+    function borrowMyUSD(uint256 borrowAmount) public {
         if (borrowAmount == 0) {
             revert Lending__InvalidAmount(); // Revert if borrow amount is zero
         }
+
+        _accrueInterest(msg.sender); // Accrue interest before new borrow
+
         s_userBorrowed[msg.sender] += borrowAmount; // Update user's borrowed corn balance
         _validatePosition(msg.sender); // Validate user's position before borrowing
-        bool success = i_myUSD.mintTo(msg.sender, borrowAmount); // Borrow corn to user
+
+        bool success = i_myUSD.mintTo(msg.sender, borrowAmount); // Borrow myUSD to user
         if (!success) {
             revert Lending__BorrowingFailed(); // Revert if borrowing fails
         }
-        emit AssetBorrowed(msg.sender, borrowAmount, i_coinDEX.currentPrice()); // Emit event for borrowing
+
+        s_lastInterestAccrual[msg.sender] = block.timestamp; // Set initial interest accrual time
+        emit AssetBorrowed(msg.sender, borrowAmount, i_coinDEX.currentPrice());
     }
 
     /**
      * @notice Allows users to repay corn and reduce their debt
      * @param repayAmount The amount of corn to repay
      */
-    function repayCorn(uint256 repayAmount) public {
+    function repayMyUSD(uint256 repayAmount) public {
         if (repayAmount == 0 || repayAmount > s_userBorrowed[msg.sender]) {
             revert Lending__InvalidAmount(); // Revert if repay amount is invalid
         }
+
+        _accrueInterest(msg.sender); // Accrue interest before repayment
+
+        if (repayAmount > s_userBorrowed[msg.sender]) {
+            revert Lending__InvalidAmount();
+        }
+
         s_userBorrowed[msg.sender] -= repayAmount; // Reduce user's borrowed balance
-        bool success = i_myUSD.burnFrom(msg.sender, repayAmount); // Burn corns from user
+        bool success = i_myUSD.burnFrom(msg.sender, repayAmount); // Burn myUSD from user
         if (!success) {
             revert Lending__RepayingFailed(); // Revert if burning fails
         }
+
         emit AssetRepaid(msg.sender, repayAmount, i_coinDEX.currentPrice()); // Emit event for repaying
     }
 
@@ -157,6 +177,8 @@ contract Lending is Ownable {
      * @dev The caller must have approved this contract to transfer the debt
      */
     function liquidate(address user) public {
+        _accrueInterest(user); // Accrue interest before liquidation
+
         if (!isLiquidatable(user)) {
             revert Lending__NotLiquidatable(); // Revert if position is not liquidatable
         }
@@ -242,6 +264,31 @@ contract Lending is Ownable {
 
         // Burn the loan - Should revert if it doesn't have enough
         i_myUSD.burnFrom(address(this), _amount);
+    }
+
+    /**
+     * @notice Accrues interest on a user's borrowed amount
+     * @param user The address of the user to accrue interest for
+     */
+    function _accrueInterest(address user) internal {
+        if (s_userBorrowed[user] == 0) return;
+
+        uint256 timeElapsed = block.timestamp - s_lastInterestAccrual[user];
+        if (timeElapsed == 0) return;
+
+        // Calculate interest: principal * rate * time / (365 days * 100)
+        uint256 interest = (s_userBorrowed[user] * INTEREST_RATE * timeElapsed) / (365 days * 100);
+
+        if (interest > 0) {
+            s_userBorrowed[user] += interest;
+            // Forward interest to staking contract
+            i_myUSD.mintTo(address(i_staking), interest);
+            i_staking.distributeRewards(interest);
+
+            emit InterestAccrued(user, interest);
+        }
+
+        s_lastInterestAccrual[user] = block.timestamp;
     }
 }
 

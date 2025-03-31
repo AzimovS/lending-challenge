@@ -52,7 +52,7 @@ contract Leverage {
                 break;
             }
             uint256 maxBorrowAmount = i_lending.getMaxBorrowAmount(balance);
-            i_lending.borrowCorn(maxBorrowAmount);
+            i_lending.borrowMyUSD(maxBorrowAmount);
 
             i_myUSDDex.swap(maxBorrowAmount);
             loops++;
@@ -75,7 +75,7 @@ contract Leverage {
                 ? i_lending.s_userBorrowed(address(this))
                 : cornBalance;
             if (amountToRepay > 0) {
-                i_lending.repayCorn(amountToRepay);
+                i_lending.repayMyUSD(amountToRepay);
             } else {
                 // Swap the remaining CORN to ETH since we don't want CORN exposure
                 i_myUSDDex.swap(i_myUSD.balanceOf(address(this)));
