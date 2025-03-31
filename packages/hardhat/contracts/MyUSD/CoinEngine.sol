@@ -52,7 +52,7 @@ contract MyUSDEngine is Ownable {
     }
 
     function setInterestRate(uint256 newRate) external onlyOwner {
-        if (newRate > 10000) revert Engine__InvalidInterestRate(); // Max 100%
+        if (newRate > 2000) revert Engine__InvalidInterestRate(); // Max 20%
         _accrueInterest();
         interestRate = newRate;
         emit InterestRateUpdated(newRate);
