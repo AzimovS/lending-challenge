@@ -23,19 +23,19 @@ contract FlashLoanLiquidator {
 
     function executeOperation(uint256 amount, address initiator, address toLiquidate) public returns (bool) {
         // Approve the lending contract to spend the tokens
-        i_corn.approve(address(i_lending), amount);
+        i_myUSD.approve(address(i_lending), amount);
         // First liquidate to get the collateral tokens
         i_lending.liquidate(toLiquidate);
         
         // Calculate required input amount of ETH to get exactly 'amount' of tokens
-        uint256 ethReserves = address(i_cornDEX).balance;
-        uint256 tokenReserves = i_corn.balanceOf(address(i_cornDEX));
-        uint256 requiredETHInput = i_cornDEX.calculateXInput(amount, ethReserves, tokenReserves);
+        uint256 ethReserves = address(i_coinDEX).balance;
+        uint256 tokenReserves = i_myUSD.balanceOf(address(i_coinDEX));
+        uint256 requiredETHInput = i_coinDEX.calculateXInput(amount, ethReserves, tokenReserves);
         
         // Execute the swap
-        i_cornDEX.swap{value: requiredETHInput}(requiredETHInput); // Swap ETH for tokens
+        i_coinDEX.swap{value: requiredETHInput}(requiredETHInput); // Swap ETH for tokens
         // Send the tokens back to Lending to repay the flash loan
-        i_corn.transfer(address(i_lending), i_corn.balanceOf(address(this)));
+        i_myUSD.transfer(address(i_lending), i_myUSD.balanceOf(address(this)));
         // Send the ETH back to the initiator
         if (address(this).balance > 0) {
             (bool success, ) = payable(initiator).call{value: address(this).balance}("");

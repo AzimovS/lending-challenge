@@ -12,7 +12,7 @@ import {MyUSD} from "./MyUSD.sol";
  */
 contract Leverage {
     Lending i_lending;
-    MyUSDDex i_myUSDDex;
+    CoinDEX i_myUSDDex;
     MyUSD i_myUSD;
     address public owner;
 
@@ -26,8 +26,8 @@ contract Leverage {
 
     constructor(address _lending, address _cornDEX, address _corn) {
         i_lending = Lending(_lending);
-        i_myUSDDex = MyUSDDex(_myUSDDex);
-        i_myUSD = MyUSD(_myUSD);
+        i_myUSDDex = CoinDEX(_cornDEX);
+        i_myUSD = MyUSD(_corn);
         // Approve the DEX to spend the user's CORN
         i_myUSD.approve(address(i_myUSDDex), type(uint256).max);
     }
@@ -54,7 +54,7 @@ contract Leverage {
             uint256 maxBorrowAmount = i_lending.getMaxBorrowAmount(balance);
             i_lending.borrowCorn(maxBorrowAmount);
 
-            i_cornDEX.swap(maxBorrowAmount);
+            i_myUSDDex.swap(maxBorrowAmount);
             loops++;
         }
         emit LeveragedPositionOpened(msg.sender, loops);
@@ -69,8 +69,8 @@ contract Leverage {
             uint256 maxWithdrawable = i_lending.getMaxWithdrawableCollateral(address(this));
             i_lending.withdrawCollateral(maxWithdrawable);
             require(maxWithdrawable == address(this).balance, "maxWithdrawable is not equal to balance");
-            i_cornDEX.swap{value: maxWithdrawable}(maxWithdrawable);
-            uint256 cornBalance = i_corn.balanceOf(address(this));
+            i_myUSDDex.swap{value: maxWithdrawable}(maxWithdrawable);
+            uint256 cornBalance = i_myUSD.balanceOf(address(this));
             uint256 amountToRepay = cornBalance > i_lending.s_userBorrowed(address(this))
                 ? i_lending.s_userBorrowed(address(this))
                 : cornBalance;
@@ -78,7 +78,7 @@ contract Leverage {
                 i_lending.repayCorn(amountToRepay);
             } else {
                 // Swap the remaining CORN to ETH since we don't want CORN exposure
-                i_cornDEX.swap(i_corn.balanceOf(address(this)));
+                i_myUSDDex.swap(i_myUSD.balanceOf(address(this)));
                 break;
             }
             loops++;
