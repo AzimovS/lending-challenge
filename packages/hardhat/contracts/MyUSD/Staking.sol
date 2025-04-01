@@ -30,6 +30,11 @@ contract Staking is Ownable, ReentrancyGuard {
         lastUpdateTime = block.timestamp;
     }
 
+    /**
+     * @notice Allows users to stake MyUSD tokens
+     * @dev Updates the user's rewards before staking
+     * @param amount The amount of MyUSD tokens to stake
+     */
     function stake(uint256 amount) external nonReentrant {
         if (amount == 0) revert Staking__InvalidAmount();
 
@@ -43,6 +48,11 @@ contract Staking is Ownable, ReentrancyGuard {
         emit Staked(msg.sender, amount);
     }
 
+    /**
+     * @notice Allows users to withdraw staked MyUSD tokens
+     * @dev Updates the user's rewards before withdrawal
+     * @param amount The amount of MyUSD tokens to withdraw
+     */
     function withdraw(uint256 amount) external nonReentrant {
         if (amount == 0) revert Staking__InvalidAmount();
         if (stakedAmount[msg.sender] < amount) revert Staking__InsufficientBalance();
@@ -57,6 +67,10 @@ contract Staking is Ownable, ReentrancyGuard {
         emit Withdrawn(msg.sender, amount);
     }
 
+    /**
+     * @notice Allows users to claim their accumulated rewards
+     * @dev Updates rewards before claiming and resets the user's reward debt
+     */
     function claimRewards() external nonReentrant {
         _updateRewards(msg.sender);
         uint256 rewards = rewardDebt[msg.sender];
@@ -69,6 +83,11 @@ contract Staking is Ownable, ReentrancyGuard {
         emit RewardsClaimed(msg.sender, rewards);
     }
 
+    /**
+     * @notice Distributes rewards to all stakers based on their staked amount
+     * @dev Called by the CoinEngine when interest is accrued from borrowers
+     * @param amount The amount of MyUSD tokens to distribute as rewards
+     */
     function distributeRewards(uint256 amount) external onlyOwner {
         if (amount == 0) return;
         if (totalStaked == 0) {
@@ -80,6 +99,11 @@ contract Staking is Ownable, ReentrancyGuard {
         emit RewardsDistributed(amount);
     }
 
+    /**
+     * @notice Updates a user's accumulated rewards
+     * @dev Internal function to calculate and update a user's rewards based on their staked amount
+     * @param user The address of the user to update rewards for
+     */
     function _updateRewards(address user) internal {
         if (stakedAmount[user] == 0) return;
 
