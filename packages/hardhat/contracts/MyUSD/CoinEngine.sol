@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./MyUSD.sol";
-import "./EthPriceOracle.sol";
+import "./CoinDEX.sol";
 import "./Staking.sol";
 
 error Engine__InvalidAmount();
@@ -22,7 +22,7 @@ contract MyUSDEngine is Ownable {
     uint256 private constant PRECISION = 1e18;
 
     MyUSD private i_myUSD;
-    EthPriceOracle private i_ethPriceOracle;
+    CoinDEX private i_coinDEX;
     Staking private i_staking;
 
     uint256 public interestRate; // Annual interest rate in basis points (1% = 100)
@@ -38,8 +38,8 @@ contract MyUSDEngine is Ownable {
     event InterestRateUpdated(uint256 newRate);
     event InterestAccrued(uint256 amount);
 
-    constructor(address _ethPriceOracle) Ownable(msg.sender) {
-        i_ethPriceOracle = EthPriceOracle(_ethPriceOracle);
+    constructor(address _coinDEX) Ownable(msg.sender) {
+        i_coinDEX = CoinDEX(_coinDEX);
         lastUpdateTime = block.timestamp;
     }
 
@@ -100,7 +100,7 @@ contract MyUSDEngine is Ownable {
             revert Engine__InvalidAmount(); // Revert if no collateral is sent
         }
         s_userCollateral[msg.sender] += msg.value; // Update user's collateral balance
-        emit CollateralAdded(msg.sender, msg.value, i_ethPriceOracle.price()); // Emit event for collateral addition
+        emit CollateralAdded(msg.sender, msg.value, i_coinDEX.currentPrice()); // Emit event for collateral addition
     }
 
     // Allows users to withdraw collateral as long as it doesn't make them liquidatable
@@ -121,7 +121,7 @@ contract MyUSDEngine is Ownable {
         // Transfer the collateral to the user
         payable(msg.sender).transfer(amount);
 
-        emit CollateralWithdrawn(msg.sender, msg.sender, amount, i_ethPriceOracle.price()); // Emit event for collateral withdrawal
+        emit CollateralWithdrawn(msg.sender, msg.sender, amount, i_coinDEX.currentPrice()); // Emit event for collateral withdrawal
     }
 
     // Allows users to mint stablecoins based on their collateral
@@ -165,7 +165,7 @@ contract MyUSDEngine is Ownable {
     // Calculates the total collateral value for a user based on their collateral balance and price point
     function calculateCollateralValue(address user) public view returns (uint256) {
         uint256 collateralAmount = s_userCollateral[user]; // Get user's collateral amount
-        return (collateralAmount * i_ethPriceOracle.price()) / 1e18; // Calculate collateral value in terms of ETH price
+        return (collateralAmount * i_coinDEX.currentPrice()) / 1e18; // Calculate collateral value in terms of ETH price
     }
 
     // Calculates the position ratio for a user to ensure they are within safe limits
@@ -229,6 +229,6 @@ contract MyUSDEngine is Ownable {
 
         s_userCollateral[user] = userCollateral - amountForLiquidator;
 
-        emit CollateralWithdrawn(user, msg.sender, amountForLiquidator, i_ethPriceOracle.price()); // Emit event for collateral withdrawal
+        emit CollateralWithdrawn(user, msg.sender, amountForLiquidator, i_coinDEX.currentPrice()); // Emit event for collateral withdrawal
     }
 }
