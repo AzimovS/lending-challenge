@@ -158,6 +158,16 @@ contract MyUSDEngine is Ownable {
     // Retrieves the user's position, including minted amount and collateral value
     function _getUserPosition(address user) private view returns (uint256 mintedAmount, uint256 collateralValue) {
         mintedAmount = s_userMinted[user]; // Get user's minted amount
+
+        // Calculate accrued interest since last update
+        if (mintedAmount > 0) {
+            uint256 timeElapsed = block.timestamp - s_userLastUpdateTime[user];
+            if (timeElapsed > 0) {
+                uint256 userInterest = (mintedAmount * interestRate * timeElapsed) / (SECONDS_PER_YEAR * 10000);
+                mintedAmount += userInterest;
+            }
+        }
+
         collateralValue = calculateCollateralValue(user); // Calculate user's collateral value
         return (mintedAmount, collateralValue); // Return user's position
     }
