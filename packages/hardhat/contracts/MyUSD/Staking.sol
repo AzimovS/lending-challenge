@@ -9,107 +9,125 @@ error Staking__InvalidAmount();
 error Staking__InsufficientBalance();
 error Staking__InsufficientAllowance();
 error Staking__TransferFailed();
+error Staking__InvalidInterestRate();
 
 contract Staking is Ownable, ReentrancyGuard {
     MyUSD public immutable myUSD;
-    uint256 public totalStaked;
-    uint256 public rewardPerStake;
+
+    // Total shares in the pool
+    uint256 public totalShares;
+
+    // Exchange rate between shares and MyUSD (1e18 precision)
+    uint256 public exchangeRate;
+
+    // Last update timestamp
     uint256 public lastUpdateTime;
-    uint256 public constant PRECISION = 1e18;
 
-    mapping(address => uint256) public stakedAmount;
-    mapping(address => uint256) public rewardDebt;
+    // Interest rate in basis points (1% = 100)
+    uint256 public interestRate;
 
-    event Staked(address indexed user, uint256 amount);
-    event Withdrawn(address indexed user, uint256 amount);
-    event RewardsClaimed(address indexed user, uint256 amount);
-    event RewardsDistributed(uint256 amount);
+    // User's share balance
+    mapping(address => uint256) public userShares;
+
+    // Constants
+    uint256 private constant PRECISION = 1e18;
+    uint256 private constant SECONDS_PER_YEAR = 365 days;
+
+    event Staked(address indexed user, uint256 amount, uint256 shares);
+    event Withdrawn(address indexed user, uint256 amount, uint256 shares);
+    event InterestRateUpdated(uint256 newRate);
+    event InterestAccrued(uint256 amount);
 
     constructor(address _myUSD) Ownable(msg.sender) {
         myUSD = MyUSD(_myUSD);
+        exchangeRate = PRECISION; // 1:1 initially
         lastUpdateTime = block.timestamp;
     }
 
-    /**
-     * @notice Allows users to stake MyUSD tokens
-     * @dev Updates the user's rewards before staking
-     * @param amount The amount of MyUSD tokens to stake
-     */
-    function stake(uint256 amount) external nonReentrant {
-        if (amount == 0) revert Staking__InvalidAmount();
-
-        _updateRewards(msg.sender);
-        stakedAmount[msg.sender] += amount;
-        totalStaked += amount;
-
-        bool success = myUSD.transferFrom(msg.sender, address(this), amount);
-        if (!success) revert Staking__TransferFailed();
-
-        emit Staked(msg.sender, amount);
+    function setInterestRate(uint256 newRate) external onlyOwner {
+        if (newRate > 2000) revert Staking__InvalidInterestRate(); // Max 20%
+        _accrueInterest();
+        interestRate = newRate;
+        emit InterestRateUpdated(newRate);
     }
 
-    /**
-     * @notice Allows users to withdraw staked MyUSD tokens
-     * @dev Updates the user's rewards before withdrawal
-     * @param amount The amount of MyUSD tokens to withdraw
-     */
-    function withdraw(uint256 amount) external nonReentrant {
-        if (amount == 0) revert Staking__InvalidAmount();
-        if (stakedAmount[msg.sender] < amount) revert Staking__InsufficientBalance();
-
-        _updateRewards(msg.sender);
-        stakedAmount[msg.sender] -= amount;
-        totalStaked -= amount;
-
-        bool success = myUSD.transfer(msg.sender, amount);
-        if (!success) revert Staking__TransferFailed();
-
-        emit Withdrawn(msg.sender, amount);
-    }
-
-    /**
-     * @notice Allows users to claim their accumulated rewards
-     * @dev Updates rewards before claiming and resets the user's reward debt
-     */
-    function claimRewards() external nonReentrant {
-        _updateRewards(msg.sender);
-        uint256 rewards = rewardDebt[msg.sender];
-        if (rewards == 0) return;
-
-        rewardDebt[msg.sender] = 0;
-        bool success = myUSD.transfer(msg.sender, rewards);
-        if (!success) revert Staking__TransferFailed();
-
-        emit RewardsClaimed(msg.sender, rewards);
-    }
-
-    /**
-     * @notice Distributes rewards to all stakers based on their staked amount
-     * @dev Called by the CoinEngine when interest is accrued from borrowers
-     * @param amount The amount of MyUSD tokens to distribute as rewards
-     */
-    function distributeRewards(uint256 amount) external onlyOwner {
-        if (amount == 0) return;
-        if (totalStaked == 0) {
+    function _accrueInterest() internal {
+        if (totalShares == 0) {
             lastUpdateTime = block.timestamp;
             return;
         }
 
-        rewardPerStake += (amount * PRECISION) / totalStaked;
-        emit RewardsDistributed(amount);
+        uint256 timeElapsed = block.timestamp - lastUpdateTime;
+        if (timeElapsed == 0) return;
+
+        // Calculate interest based on total shares and exchange rate
+        uint256 totalValue = (totalShares * exchangeRate) / PRECISION;
+        uint256 interest = (totalValue * interestRate * timeElapsed) / (SECONDS_PER_YEAR * 10000);
+
+        if (interest > 0) {
+            // Update exchange rate to reflect new value
+            exchangeRate += (interest * PRECISION) / totalShares;
+            emit InterestAccrued(interest);
+        }
+
+        lastUpdateTime = block.timestamp;
     }
 
-    /**
-     * @notice Updates a user's accumulated rewards
-     * @dev Internal function to calculate and update a user's rewards based on their staked amount
-     * @param user The address of the user to update rewards for
-     */
-    function _updateRewards(address user) internal {
-        if (stakedAmount[user] == 0) return;
+    function stake(uint256 amount) external nonReentrant {
+        if (amount == 0) revert Staking__InvalidAmount();
 
-        uint256 rewards = ((stakedAmount[user] * rewardPerStake) / PRECISION) - rewardDebt[user];
-        if (rewards > 0) {
-            rewardDebt[user] += rewards;
+        _accrueInterest();
+
+        // Calculate shares based on current exchange rate
+        uint256 shares = (amount * PRECISION) / exchangeRate;
+
+        // Update user's shares and total shares
+        userShares[msg.sender] += shares;
+        totalShares += shares;
+
+        // Transfer tokens to contract
+        bool success = myUSD.transferFrom(msg.sender, address(this), amount);
+        if (!success) revert Staking__TransferFailed();
+
+        emit Staked(msg.sender, amount, shares);
+    }
+
+    function withdraw(uint256 shareAmount) external nonReentrant {
+        if (shareAmount == 0) revert Staking__InvalidAmount();
+        if (userShares[msg.sender] < shareAmount) revert Staking__InsufficientBalance();
+
+        _accrueInterest();
+
+        // Calculate MyUSD amount based on current exchange rate
+        uint256 amount = (shareAmount * exchangeRate) / PRECISION;
+
+        // Update user's shares and total shares
+        userShares[msg.sender] -= shareAmount;
+        totalShares -= shareAmount;
+
+        // Transfer tokens to user
+        bool success = myUSD.transfer(msg.sender, amount);
+        if (!success) revert Staking__TransferFailed();
+
+        emit Withdrawn(msg.sender, amount, shareAmount);
+    }
+
+    function getBalance(address user) external view returns (uint256) {
+        if (userShares[user] == 0) return 0;
+
+        // Calculate current exchange rate with accrued interest
+        uint256 currentExchangeRate = exchangeRate;
+        if (totalShares > 0) {
+            uint256 timeElapsed = block.timestamp - lastUpdateTime;
+            if (timeElapsed > 0) {
+                uint256 totalValue = (totalShares * exchangeRate) / PRECISION;
+                uint256 interest = (totalValue * interestRate * timeElapsed) / (SECONDS_PER_YEAR * 10000);
+                if (interest > 0) {
+                    currentExchangeRate += (interest * PRECISION) / totalShares;
+                }
+            }
         }
+
+        return (userShares[user] * currentExchangeRate) / PRECISION;
     }
 }

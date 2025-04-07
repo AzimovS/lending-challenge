@@ -70,8 +70,13 @@ contract MyUSDEngine is Ownable {
         uint256 interest = (totalDebt * interestRate * timeElapsed) / (SECONDS_PER_YEAR * 10000);
         if (interest > 0) {
             totalDebt += interest;
+
+            // Mint interest to the staking contract
             i_myUSD.mintTo(address(i_staking), interest);
-            i_staking.distributeRewards(interest);
+
+            // Update the staking contract's exchange rate to reflect the new interest
+            i_staking.setInterestRate(interestRate);
+
             emit InterestAccrued(interest);
         }
         lastUpdateTime = block.timestamp;
